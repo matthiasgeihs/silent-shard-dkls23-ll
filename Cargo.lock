@@ -263,6 +263,7 @@ dependencies = [
  "k256",
  "merlin",
  "rand",
+ "rayon",
  "serde",
  "serde_json",
  "sha2",

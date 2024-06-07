@@ -721,52 +721,63 @@ pub fn derive_with_offset(
 #[cfg(test)]
 mod tests {
     use crate::dkg::{Party, RefreshShare};
+    use rayon::prelude::*;
     use std::str::FromStr;
+    use std::time::Instant;
 
     use super::*;
 
     use crate::dkg::tests::{check_serde, dkg, dkg_inner};
 
     fn dsg(shares: &[Keyshare]) {
-        let mut rng = rand::thread_rng();
+        let start_time = Instant::now();
 
         let chain_path = DerivationPath::from_str("m").unwrap();
         let mut parties = shares
-            .iter()
-            .map(|s| State::new(&mut rng, s.clone(), &chain_path).unwrap())
+            .par_iter()
+            .map(|s| {
+                let mut rng = rand::thread_rng();
+                State::new(&mut rng, s.clone(), &chain_path).unwrap()
+            })
             .collect::<Vec<_>>();
 
         let msg1: Vec<SignMsg1> =
-            parties.iter_mut().map(|p| p.generate_msg1()).collect();
+            parties.par_iter_mut().map(|p| p.generate_msg1()).collect();
 
         check_serde(&msg1);
 
-        let msg2 = parties.iter_mut().fold(vec![], |mut msg2, party| {
-            let batch: Vec<SignMsg1> = msg1
-                .iter()
-                .filter(|msg| msg.from_id != party.keyshare.party_id)
-                .cloned()
-                .collect();
-            msg2.extend(party.handle_msg1(&mut rng, batch).unwrap());
-            msg2
-        });
+        let msg2: Vec<SignMsg2> = parties
+            .par_iter_mut()
+            .flat_map(|party| {
+                let batch: Vec<SignMsg1> = msg1
+                    .iter()
+                    .filter(|msg| msg.from_id != party.keyshare.party_id)
+                    .cloned()
+                    .collect();
+                let mut rng = rand::thread_rng();
+                party.handle_msg1(&mut rng, batch).unwrap()
+            })
+            .collect();
 
         check_serde(&msg2);
 
-        let msg3 = parties.iter_mut().fold(vec![], |mut msg3, party| {
-            let batch: Vec<SignMsg2> = msg2
-                .iter()
-                .filter(|msg| msg.from_id != party.keyshare.party_id)
-                .cloned()
-                .collect();
-            msg3.extend(party.handle_msg2(&mut rng, batch).unwrap());
-            msg3
-        });
+        let msg3: Vec<SignMsg3> = parties
+            .par_iter_mut()
+            .flat_map(|party| {
+                let batch: Vec<SignMsg2> = msg2
+                    .iter()
+                    .filter(|msg| msg.from_id != party.keyshare.party_id)
+                    .cloned()
+                    .collect();
+                let mut rng = rand::thread_rng();
+                party.handle_msg2(&mut rng, batch).unwrap()
+            })
+            .collect();
 
         check_serde(&msg3);
 
-        let pre_signs = parties
-            .iter_mut()
+        let pre_signs: Vec<PreSignature> = parties
+            .par_iter_mut()
             .map(|party| {
                 let batch: Vec<SignMsg3> = msg3
                     .iter()
@@ -776,20 +787,20 @@ mod tests {
 
                 party.handle_msg3(batch).unwrap()
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         check_serde(&pre_signs);
 
         let hash = [255; 32];
 
         let (partials, msg4): (Vec<_>, Vec<_>) = pre_signs
-            .into_iter()
+            .into_par_iter()
             .map(|pre| create_partial_signature(pre, hash))
             .unzip();
         // at this point the partial signatures are created you can store them for later usage
         // an example of a final signature is shown below.
         let _sigs = partials
-            .into_iter()
+            .into_par_iter()
             .map(|p| {
                 let batch: Vec<SignMsg4> = msg4
                     .iter()
@@ -801,6 +812,9 @@ mod tests {
             })
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
+
+        let elapsed_time = start_time.elapsed();
+        println!("DSG: {:?}", elapsed_time);
     }
 
     #[test]

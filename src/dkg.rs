@@ -975,7 +975,9 @@ fn get_lagrange_coeff(
 
 #[cfg(test)]
 pub mod tests {
+    use rayon::prelude::*;
     use serde::de::DeserializeOwned;
+    use std::time::Instant;
 
     use super::*;
 
@@ -1034,66 +1036,70 @@ pub mod tests {
     }
 
     pub fn dkg_inner(mut parties: Vec<State>) -> Vec<Keyshare> {
-        let mut rng = rand::thread_rng();
+        let start_time = Instant::now();
 
         let msg1: Vec<KeygenMsg1> =
-            parties.iter_mut().map(|p| p.generate_msg1()).collect();
+            parties.par_iter_mut().map(|p| p.generate_msg1()).collect();
 
         check_serde(&msg1);
 
-        let mut msg2: Vec<KeygenMsg2> = vec![];
-
-        for party in &mut parties {
-            let batch: Vec<KeygenMsg1> = msg1
-                .iter()
-                .filter(|msg| msg.from_id != party.party_id)
-                .cloned()
-                .collect();
-            msg2.extend(party.handle_msg1(&mut rng, batch).unwrap());
-        }
+        let msg2: Vec<KeygenMsg2> = parties
+            .par_iter_mut()
+            .flat_map(|party| {
+                let mut rng = rand::thread_rng();
+                let batch: Vec<KeygenMsg1> = msg1
+                    .iter()
+                    .filter(|msg| msg.from_id != party.party_id)
+                    .cloned()
+                    .collect();
+                party.handle_msg1(&mut rng, batch).unwrap()
+            })
+            .collect();
 
         check_serde(&msg2);
 
-        let mut msg3: Vec<KeygenMsg3> = vec![];
+        let msg3: Vec<KeygenMsg3> = parties
+            .par_iter_mut()
+            .flat_map(|party| {
+                let mut rng = rand::thread_rng();
+                let batch: Vec<KeygenMsg2> = msg2
+                    .iter()
+                    .filter(|msg| msg.to_id == party.party_id)
+                    .cloned()
+                    .collect();
 
-        for party in &mut parties {
-            let batch: Vec<KeygenMsg2> = msg2
-                .iter()
-                .filter(|msg| msg.to_id == party.party_id)
-                .cloned()
-                .collect();
-
-            msg3.extend(party.handle_msg2(&mut rng, batch).unwrap());
-        }
+                party.handle_msg2(&mut rng, batch).unwrap()
+            })
+            .collect();
 
         check_serde(&msg3);
 
-        let mut msg4: Vec<KeygenMsg4> = vec![];
-
         let commitment_2_list = parties
-            .iter()
+            .par_iter()
             .map(|p| p.calculate_commitment_2())
             .collect::<Vec<_>>();
 
-        for party in &mut parties {
-            let batch: Vec<KeygenMsg3> = msg3
-                .iter()
-                .filter(|msg| msg.to_id == party.party_id)
-                .cloned()
-                .collect();
+        let msg4: Vec<KeygenMsg4> = parties
+            .par_iter_mut()
+            .map(|party| {
+                let mut rng = rand::thread_rng();
+                let batch: Vec<KeygenMsg3> = msg3
+                    .iter()
+                    .filter(|msg| msg.to_id == party.party_id)
+                    .cloned()
+                    .collect();
 
-            msg4.push(
                 party
                     .handle_msg3(&mut rng, batch, &commitment_2_list)
-                    .unwrap(),
-            );
-        }
+                    .unwrap()
+            })
+            .collect();
 
         check_serde(&msg4);
 
-        parties
-            .into_iter()
-            .map(|mut party| {
+        let result = parties
+            .par_iter_mut()
+            .map(|party| {
                 let batch: Vec<KeygenMsg4> = msg4
                     .iter()
                     .filter(|msg| msg.from_id != party.party_id)
@@ -1102,7 +1108,10 @@ pub mod tests {
 
                 party.handle_msg4(batch).unwrap()
             })
-            .collect()
+            .collect();
+        let elapsed_time = start_time.elapsed();
+        println!("DKG: {:?}", elapsed_time);
+        result
     }
 
     #[test]
